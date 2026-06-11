@@ -357,14 +357,24 @@ def generate_chunks_with_llm(client: OpenAI, page_text: str, page_num: int) -> l
     }]
 
 def setup_qdrant_collection(client: QdrantClient, collection_name: str, recreate: bool = False):
-    existing = [c.name for c in client.get_collections().collections]
+    if not client:
+        raise ValueError("Qdrant client is not initialized. Check your environment variables.")
 
+    # Safely get existing collections
+    try:
+        existing = [c.name for c in client.get_collections().collections]
+    except Exception as e:
+        st.error(f"Failed to access Qdrant collections: {e}")
+        return
+
+    # Delete if recreating
     if collection_name in existing:
         if recreate:
             client.delete_collection(collection_name)
         else:
-            return
+            return  # Collection already exists, skip creation
 
+    # Create collection with accurate Vector configuration
     client.create_collection(
         collection_name=collection_name,
         vectors_config=VectorParams(
@@ -374,24 +384,32 @@ def setup_qdrant_collection(client: QdrantClient, collection_name: str, recreate
         ),
     )
 
+    # Creating Payload Keyword indexes
     for field in ["item_type", "item_id", "page"]:
+        try:
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=f"metadata.{field}",
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as e:
+            st.warning(f"Could not create payload index for {field}: {e}")
+
+    # Creating Text Index for Full-Text Search fallback
+    try:
         client.create_payload_index(
             collection_name=collection_name,
-            field_name=f"metadata.{field}",
-            field_schema=PayloadSchemaType.KEYWORD,
+            field_name="text",
+            field_schema=TextIndexParams(
+                type="text",
+                tokenizer=TokenizerType.WORD,
+                min_token_len=2,
+                max_token_len=40,
+                lowercase=True,
+            ),
         )
-
-    client.create_payload_index(
-        collection_name=collection_name,
-        field_name="text",
-        field_schema=TextIndexParams(
-            type="text",
-            tokenizer=TokenizerType.WORD,
-            min_token_len=2,
-            max_token_len=40,
-            lowercase=True,
-        ),
-    )
+    except Exception as e:
+        st.warning(f"Could not create text index: {e}")
 
 # Dialog decorator for target collection settings and extraction parameters
 @st.dialog("Target Collection & Extraction Parameters")
